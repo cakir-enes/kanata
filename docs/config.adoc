@@ -5542,6 +5542,11 @@ using the `macos-dev-names-exclude` configuration.
 Device names that do not exist in the list will be included.
 This option is parsed identically to `linux-dev`.
 
+Keyboards connected after kanata has started are picked up automatically,
+in every mode: with an exclude list, every new keyboard that is not excluded
+is intercepted; with an include list, a new keyboard is intercepted when its
+name (or hash) is in the list. No restart is needed.
+
 Use `kanata -l` or `kanata --list` to list the available keyboards.
 
 .Example:
@@ -6087,6 +6092,39 @@ echo '{"ActOnFakeKey":{"name":"email-sig","action":"Tap"}}' | nc localhost 7070
 
 This is the TCP equivalent of the <<set-mouse>> keyboard action.
 
+===== Input Devices
+
+[cols="1,2"]
+|===
+| Command | Description
+
+| `{"SetInputDeviceEnabled":{"id":1,"enabled":false}}`
+| Enable or disable an input device by its <<definputdevices,`definputdevices`>> ID.
+  While disabled, key presses from that device are dropped; releases still pass
+  through so keys held at the moment of disabling do not get stuck.
+  The state is kept across live reloads and is reset when kanata restarts.
+  Responds with `{"status":"Ok"}` or `{"status":"Error","msg":"..."}`.
+
+| `{"RequestInputDevices":{}}`
+| Request every `definputdevices` ID and its enabled state.
+  Server responds with `InputDevices`.
+|===
+
+Example: disable the built-in keyboard of a laptop while an external keyboard
+is in use, with the laptop keyboard defined as device 1.
+
+[source]
+----
+(definputdevices
+  1 ((name "Apple Internal Keyboard / Trackpad"))
+)
+----
+
+[source,bash]
+----
+echo '{"SetInputDeviceEnabled":{"id":1,"enabled":false}}' | nc localhost 7070
+----
+
 ===== Configuration Reload
 
 [cols="1,2"]
@@ -6184,6 +6222,10 @@ These are sent in response to client queries:
 
 | `{"ReloadResult":{"ok":true}}`
 | Response to reload commands when `wait` was `true`. Indicates whether the config reload succeeded. If timed out, includes `timeout_ms`.
+
+| `{"InputDevices":{"devices":[{"id":1,"enabled":false}]}}`
+| Response to `RequestInputDevices`. Lists every `definputdevices` ID with its enabled state.
+
 |===
 
 For a complete implementation example, see the

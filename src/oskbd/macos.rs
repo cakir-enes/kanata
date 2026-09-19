@@ -641,7 +641,13 @@ impl From<InputEvent> for DKEvent {
 
 pub struct KbdIn {
     grabbed: bool,
-    device_hash_to_id: HashMap<u64, std::num::NonZeroU8>,
+    /// `definputdevices` matchers, kept so that a keyboard connected after
+    /// startup can still be assigned its device ID.
+    input_devices: Vec<(std::num::NonZeroU8, kanata_parser::cfg::InputDeviceMatcher)>,
+    /// Device hash → device ID. `None` caches "this device matches no
+    /// `definputdevices` entry" so unmatched devices are not re-enumerated
+    /// on every key event.
+    device_hash_to_id: HashMap<u64, Option<std::num::NonZeroU8>>,
 }
 
 impl Drop for KbdIn {
@@ -695,25 +701,40 @@ impl KbdIn {
         let device_names = if let Some(ref included_names) = include_names {
             validate_and_register_devices(included_names, device_matches, register_device)
         } else if let Some(ref excluded_names) = exclude_names {
-            // Exclude list: enumerate devices, filter out excluded and
-            // known-problematic virtual devices (Sidecar, etc.), then
-            // register the remainder individually.
+            // Exclude list: tell the driver which devices to leave alone,
+            // then register everything else. The driver applies the same
+            // rule to keyboards connected after startup, so a newly plugged
+            // keyboard is captured without restarting kanata. Known
+            // problematic virtual devices (Sidecar, Karabiner) are skipped
+            // by the driver in this mode.
+            for name in excluded_names {
+                let name = sanitize_device_name(name);
+                if name.trim().is_empty() {
+                    continue;
+                }
+                if !exclude_device(name) {
+                    log::info!("excluded device '{name}' is not currently connected");
+                }
+            }
             let kb_list = fetch_devices();
-            let devices_to_include = kb_list
+            let connected = kb_list
                 .iter()
                 .filter(|k| !excluded_names.iter().any(|n| *k == n.as_str()))
                 .filter(|k| !is_skipped_virtual_device(&k.product_key))
-                .map(|k| {
+                .filter_map(|k| {
                     let name = sanitize_device_name(&k.product_key);
                     if name.trim().is_empty() {
-                        format!("{:x}", k.hash)
+                        // Unnamed devices are not covered by register-all;
+                        // register them by hash like before.
+                        let hash = format!("{:x}", k.hash);
+                        register_device(&hash).then_some(hash)
                     } else {
-                        name.to_string()
+                        Some(name.to_string())
                     }
                 })
                 .collect::<Vec<String>>();
-
-            validate_and_register_devices(&devices_to_include, device_matches, register_device)
+            register_device("");
+            connected
         } else {
             vec![]
         };
@@ -723,6 +744,7 @@ impl KbdIn {
                 let device_hash_to_id = build_device_hash_to_id_map(input_devices);
                 Ok(Self {
                     grabbed: true,
+                    input_devices: input_devices.map(<[_]>::to_vec).unwrap_or_default(),
                     device_hash_to_id,
                 })
             } else {
@@ -757,6 +779,7 @@ impl KbdIn {
                 let device_hash_to_id = build_device_hash_to_id_map(input_devices);
                 Ok(Self {
                     grabbed: false,
+                    input_devices: input_devices.map(<[_]>::to_vec).unwrap_or_default(),
                     device_hash_to_id,
                 })
             } else {
@@ -793,8 +816,26 @@ impl KbdIn {
     }
 
     /// Look up the device ID for an event's device hash.
-    pub fn device_id_for_hash(&self, hash: u64) -> Option<std::num::NonZeroU8> {
-        self.device_hash_to_id.get(&hash).copied()
+    ///
+    /// A hash that was not seen at startup belongs to a keyboard connected
+    /// later; it is matched against `definputdevices` once and cached.
+    pub fn device_id_for_hash(&mut self, hash: u64) -> Option<std::num::NonZeroU8> {
+        if let Some(id) = self.device_hash_to_id.get(&hash) {
+            return *id;
+        }
+        let id = if self.input_devices.is_empty() {
+            None
+        } else {
+            fetch_devices()
+                .iter()
+                .find(|kb| kb.hash == hash)
+                .and_then(|kb| match_device_id(kb, &self.input_devices))
+        };
+        if let Some(id) = id {
+            log::info!("definputdevices: hotplugged device (hash {hash:x}) assigned ID {id}");
+        }
+        self.device_hash_to_id.insert(hash, id);
+        id
     }
 
     /// Release seized input devices without tearing down the output connection.
@@ -851,6 +892,7 @@ impl KbdIn {
                     let device_hash_to_id = build_device_hash_to_id_map(input_devices);
                     return Ok(Self {
                         grabbed: true,
+                        input_devices: input_devices.map(<[_]>::to_vec).unwrap_or_default(),
                         device_hash_to_id,
                     });
                 }
@@ -895,51 +937,60 @@ fn sanitize_device_name(name: &str) -> &str {
     name.split_once('\0').map_or(name, |(prefix, _)| prefix)
 }
 
+/// Return the `definputdevices` ID matching a connected device, if any.
+/// When several entries match, the first one wins.
+fn match_device_id(
+    kb: &DeviceData,
+    matchers: &[(std::num::NonZeroU8, kanata_parser::cfg::InputDeviceMatcher)],
+) -> Option<std::num::NonZeroU8> {
+    let mut matched = None;
+    for (id, matcher) in matchers.iter() {
+        let name_matches = matcher
+            .name
+            .as_ref()
+            .is_none_or(|n| kb.product_key.contains(n.as_str()));
+        let hash_matches = matcher.hash.as_ref().is_none_or(|h| {
+            let device_hash = format!("{:x}", kb.hash);
+            device_hash.eq_ignore_ascii_case(h)
+        });
+        let vendor_matches = matcher
+            .vendor_id
+            .is_none_or(|v| u16::try_from(kb.vendor_id) == Ok(v));
+        let product_matches = matcher
+            .product_id
+            .is_none_or(|p| u16::try_from(kb.product_id) == Ok(p));
+        if name_matches && hash_matches && vendor_matches && product_matches {
+            if let Some(existing_id) = matched {
+                log::warn!(
+                    "definputdevices: device \"{}\" (hash {:x}) also matches ID {id}, \
+                     keeping first match ID {existing_id}",
+                    kb.product_key,
+                    kb.hash
+                );
+                continue;
+            }
+            log::info!(
+                "definputdevices: device ID {id} matched \"{}\" (hash {:x})",
+                kb.product_key,
+                kb.hash
+            );
+            matched = Some(*id);
+        }
+    }
+    matched
+}
+
 /// Build a mapping from device hashes to configured device IDs by matching
 /// the connected devices against the `definputdevices` matchers.
 fn build_device_hash_to_id_map(
     input_devices: Option<&[(std::num::NonZeroU8, kanata_parser::cfg::InputDeviceMatcher)]>,
-) -> HashMap<u64, std::num::NonZeroU8> {
-    use std::num::NonZeroU8;
-    let mut map: HashMap<u64, NonZeroU8> = HashMap::new();
+) -> HashMap<u64, Option<std::num::NonZeroU8>> {
+    let mut map = HashMap::new();
     let Some(matchers) = input_devices else {
         return map;
     };
-    let kb_list = fetch_devices();
-    for (id, matcher) in matchers.iter() {
-        for kb in &kb_list {
-            let name_matches = matcher
-                .name
-                .as_ref()
-                .is_none_or(|n| kb.product_key.contains(n.as_str()));
-            let hash_matches = matcher.hash.as_ref().is_none_or(|h| {
-                let device_hash = format!("{:x}", kb.hash);
-                device_hash.eq_ignore_ascii_case(h)
-            });
-            let vendor_matches = matcher
-                .vendor_id
-                .is_none_or(|v| u16::try_from(kb.vendor_id) == Ok(v));
-            let product_matches = matcher
-                .product_id
-                .is_none_or(|p| u16::try_from(kb.product_id) == Ok(p));
-            if name_matches && hash_matches && vendor_matches && product_matches {
-                if let Some(existing_id) = map.get(&kb.hash) {
-                    log::warn!(
-                        "definputdevices: device \"{}\" (hash {:x}) also matches ID {id}, \
-                         keeping first match ID {existing_id}",
-                        kb.product_key,
-                        kb.hash
-                    );
-                    continue;
-                }
-                log::info!(
-                    "definputdevices: device ID {id} matched \"{}\" (hash {:x})",
-                    kb.product_key,
-                    kb.hash
-                );
-                map.insert(kb.hash, *id);
-            }
-        }
+    for kb in fetch_devices() {
+        map.insert(kb.hash, match_device_id(&kb, matchers));
     }
     map
 }
@@ -973,9 +1024,11 @@ fn validate_and_register_devices(
                 .or_else(|| dev.strip_prefix("0X"))
                 .unwrap_or(dev);
             let is_hash = u64::from_str_radix(hash, 16).is_ok();
-            if !is_hash && !matches(dev) {
-                log::warn!("'{dev}' doesn't match any connected device");
-                return None;
+            let connected = is_hash || matches(dev);
+            if !connected {
+                log::warn!(
+                    "'{dev}' doesn't match any connected device; it will be captured if it connects later"
+                );
             }
 
             if register(dev) {
@@ -983,10 +1036,8 @@ fn validate_and_register_devices(
             } else {
                 if is_hash {
                     log::info!("Device '{dev}' is not currently connected");
-                } else {
-                    log::warn!(
-                        "Couldn't register device '{dev}' - no matching connected device found"
-                    );
+                } else if connected {
+                    log::warn!("Couldn't register device '{dev}' - device may be in use by another application or disconnected");
                 }
                 None
             }

@@ -63,6 +63,18 @@ pub enum ServerMessage {
     TapActivated {
         key: String,
     },
+    /// Response to `RequestInputDevices`: every `definputdevices` ID and
+    /// whether it is currently enabled.
+    InputDevices {
+        devices: Vec<InputDeviceState>,
+    },
+}
+
+/// Enabled state of one `definputdevices` entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputDeviceState {
+    pub id: u8,
+    pub enabled: bool,
 }
 
 /// Returns true if the subscribe option logs user typing over TCP
@@ -150,6 +162,16 @@ pub enum ClientMessage {
         timeout_ms: Option<u64>,
     },
 
+    /// Enable or disable an input device defined in `definputdevices`.
+    /// While disabled, key presses from that device are dropped.
+    SetInputDeviceEnabled {
+        id: u8,
+        enabled: bool,
+    },
+    /// Request every `definputdevices` ID and its enabled state.
+    /// Server responds with `InputDevices`.
+    RequestInputDevices {},
+
     /// Request server capabilities and version.
     /// Introduced in protocol v1.11.
     Hello {},
@@ -180,6 +202,33 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ServerResponse::Ok).unwrap(),
             r#"{"status":"Ok"}"#
+        );
+    }
+
+    #[test]
+    fn test_input_device_messages_json_format() {
+        let msg: ClientMessage = r#"{"SetInputDeviceEnabled":{"id":1,"enabled":false}}"#
+            .parse()
+            .unwrap();
+        assert!(matches!(
+            msg,
+            ClientMessage::SetInputDeviceEnabled {
+                id: 1,
+                enabled: false
+            }
+        ));
+        let msg: ClientMessage = r#"{"RequestInputDevices":{}}"#.parse().unwrap();
+        assert!(matches!(msg, ClientMessage::RequestInputDevices {}));
+
+        let reply = ServerMessage::InputDevices {
+            devices: vec![InputDeviceState {
+                id: 1,
+                enabled: false,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            r#"{"InputDevices":{"devices":[{"id":1,"enabled":false}]}}"#
         );
     }
 

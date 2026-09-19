@@ -339,6 +339,9 @@ pub struct Kanata {
     last_pressed_key: KeyCode,
     /// Names of fake keys mapped to their index in the fake keys row
     pub virtual_keys: HashMap<String, usize>,
+    /// `definputdevices` IDs whose key presses are currently dropped.
+    /// Toggled at runtime through the TCP server.
+    pub disabled_input_devices: HashSet<std::num::NonZeroU8>,
     /// The maximum value of the any time-dependent check in the configuration.
     pub max_key_timing_check: u16,
     #[cfg(feature = "tcp_server")]
@@ -591,6 +594,7 @@ impl Kanata {
             suppressed_keys: vec![],
             last_pressed_key: KeyCode::No,
             virtual_keys: cfg.fake_keys,
+            disabled_input_devices: HashSet::default(),
             max_key_timing_check: cfg.max_key_timing_check,
             input_devices: cfg.input_devices,
             #[cfg(feature = "tcp_server")]
@@ -759,6 +763,7 @@ impl Kanata {
             suppressed_keys: vec![],
             last_pressed_key: KeyCode::No,
             virtual_keys: cfg.fake_keys,
+            disabled_input_devices: HashSet::default(),
             max_key_timing_check: cfg.max_key_timing_check,
             input_devices: cfg.input_devices,
             #[cfg(feature = "tcp_server")]
@@ -983,10 +988,53 @@ impl Kanata {
         Ok(())
     }
 
+    /// Enable or disable an input device defined in `definputdevices`.
+    ///
+    /// Presses from a disabled device are dropped before they reach the
+    /// layout. Releases still pass through so that keys held at the moment
+    /// of disabling do not get stuck.
+    pub fn set_input_device_enabled(
+        &mut self,
+        id: std::num::NonZeroU8,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let known = self
+            .input_devices
+            .as_ref()
+            .is_some_and(|devs| devs.iter().any(|(dev_id, _)| *dev_id == id));
+        if !known {
+            return Err(format!(
+                "input device ID {id} is not defined in definputdevices"
+            ));
+        }
+        if enabled {
+            self.disabled_input_devices.remove(&id);
+        } else {
+            self.disabled_input_devices.insert(id);
+        }
+        Ok(())
+    }
+
+    /// Every `definputdevices` ID with its current enabled state.
+    pub fn input_device_states(&self) -> Vec<(u8, bool)> {
+        self.input_devices
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|(id, _)| (id.get(), !self.disabled_input_devices.contains(id)))
+            .collect()
+    }
+
     /// Update keyberon layout state for press/release, handle repeat separately
     pub fn handle_input_event(&mut self, event: &KeyEvent) -> Result<()> {
         log::debug!("process recv ev {event:?}");
         if event.value == KeyValue::Press {
+            if let Some(id) = event.device_id()
+                && self.disabled_input_devices.contains(&id)
+            {
+                log::debug!("dropping press from disabled input device {id}");
+                return Ok(());
+            }
             self.layout
                 .bm()
                 .device_history

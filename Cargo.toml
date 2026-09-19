@@ -161,3 +161,6 @@ opt-level = "z"
 lto = "fat"
 panic = "abort"
 codegen-units = 1
+
+[patch.crates-io]
+karabiner-driverkit = { path = "../driverkit" }

@@ -375,6 +375,56 @@ impl TcpServer {
                                                     }
                                                 }
                                             }
+                                            ClientMessage::SetInputDeviceEnabled {
+                                                id,
+                                                enabled,
+                                            } => {
+                                                let result = match std::num::NonZeroU8::new(id) {
+                                                    Some(id) => kanata
+                                                        .lock()
+                                                        .set_input_device_enabled(id, enabled),
+                                                    None => Err(
+                                                        "input device ID must be between 1 and 255"
+                                                            .to_string(),
+                                                    ),
+                                                };
+                                                let response = match result {
+                                                    Ok(()) => {
+                                                        log::info!(
+                                                            "tcp server set input device {id} enabled: {enabled}"
+                                                        );
+                                                        ServerResponse::Ok
+                                                    }
+                                                    Err(msg) => ServerResponse::Error { msg },
+                                                };
+                                                if !send_response(
+                                                    &mut stream,
+                                                    response,
+                                                    &connections,
+                                                    &addr,
+                                                ) {
+                                                    break;
+                                                }
+                                            }
+                                            ClientMessage::RequestInputDevices {} => {
+                                                let msg = ServerMessage::InputDevices {
+                                                    devices: kanata
+                                                        .lock()
+                                                        .input_device_states()
+                                                        .into_iter()
+                                                        .map(|(id, enabled)| InputDeviceState {
+                                                            id,
+                                                            enabled,
+                                                        })
+                                                        .collect(),
+                                                };
+                                                if let Err(err) = stream.write_all(&msg.as_bytes())
+                                                {
+                                                    log::error!(
+                                                        "server could not send response: {err}"
+                                                    );
+                                                }
+                                            }
                                             ClientMessage::RequestCurrentLayerInfo {} => {
                                                 let mut k = kanata.lock();
                                                 let cur_layer = k.layout.bm().current_layer();
@@ -421,6 +471,7 @@ impl TcpServer {
                                                     "fake-key".to_string(),
                                                     "set-mouse".to_string(),
                                                     "subscribe".to_string(),
+                                                    "input-devices".to_string(),
                                                 ];
                                                 let msg = ServerMessage::HelloOk {
                                                     version,
