@@ -60,6 +60,8 @@ mod defgamepad;
 pub use defgamepad::*;
 mod definputdevices;
 pub use definputdevices::*;
+mod defdeviceremap;
+pub use defdeviceremap::*;
 mod defhands;
 use defhands::{
     parse_defhands, parse_tap_hold_opposite_hand, parse_tap_hold_opposite_hand_release,
@@ -323,6 +325,8 @@ pub struct Cfg {
     /// Gamepad config declared by `defgamepad`. `None` without one; mapped
     /// `pad-*` input requires a declaration, even an empty one.
     pub gamepad: Option<crate::gamepad::GamepadConfig>,
+    /// Per-device physical key remaps from `defdeviceremap`.
+    pub device_remaps: HashMap<std::num::NonZeroU8, DeviceRemap>,
 }
 
 /// Parse a new configuration from a file.
@@ -418,6 +422,7 @@ fn populate_cfg_with_icfg(icfg: IntermediateCfg, s: ParserState) -> Cfg {
         zippy: icfg.zippy,
         input_devices: s.input_devices,
         gamepad: s.gamepad,
+        device_remaps: s.device_remaps,
     }
 }
 
@@ -684,6 +689,19 @@ pub fn parse_cfg_raw_string(
         .find(gen_first_atom_filter("definputdevices"))
         .map(|expr| parse_definputdevices(expr, &vars))
         .transpose()?;
+    let mut device_remaps: HashMap<std::num::NonZeroU8, DeviceRemap> = HashMap::default();
+    for expr in root_exprs
+        .iter()
+        .filter(gen_first_atom_filter("defdeviceremap"))
+    {
+        let (id, remap) = parse_defdeviceremap(expr, &vars, input_devices.as_deref())?;
+        if device_remaps.insert(id, remap).is_some() {
+            bail_expr!(
+                &expr[1],
+                "Only one defdeviceremap per device ID is allowed, found more."
+            );
+        }
+    }
 
     if let Some(spanned) = spanned_root_exprs
         .iter()
@@ -814,6 +832,7 @@ pub fn parse_cfg_raw_string(
         max_key_timing_check: Cell::new(cfg.rapid_event_delay),
         input_devices,
         gamepad,
+        device_remaps,
         ..Default::default()
     };
 
@@ -1111,6 +1130,7 @@ fn error_on_unknown_top_level_atoms(exprs: &[Spanned<Vec<SExpr>>]) -> Result<()>
                 | "defhands"
                 | "definputdevices"
                 | "defgamepad" => Ok(()),
+                | "defdeviceremap" => Ok(()),
                 _ => err_span!(expr, "Found unknown configuration item"),
             })
             .ok_or_else(|| {
@@ -1236,6 +1256,7 @@ pub struct ParserState {
     emits_mouse_buttons: Cell<bool>,
     input_devices: Option<Vec<(std::num::NonZeroU8, InputDeviceMatcher)>>,
     gamepad: Option<crate::gamepad::GamepadConfig>,
+    device_remaps: HashMap<std::num::NonZeroU8, DeviceRemap>,
     pctx: ParserContext,
     pub lsp_hints: RefCell<LspHints>,
     hand_map: Option<&'static custom_tap_hold::HandMap>,
@@ -1271,6 +1292,7 @@ impl Default for ParserState {
             emits_mouse_buttons: Cell::new(false),
             input_devices: None,
             gamepad: None,
+            device_remaps: HashMap::default(),
             lsp_hints: Default::default(),
             hand_map: None,
             a: unsafe { Allocations::new() },

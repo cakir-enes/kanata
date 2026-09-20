@@ -4685,6 +4685,71 @@ nothing.
   must be named in `defsrc`, the same way mouse buttons are.
 * *Controller controls cannot be used as output.* They name a physical control
   on a pad, not a scancode any operating system can be asked to emit.
+[[defdeviceremap]]
+== defdeviceremap
+
+**Reference**
+
+The optional `defdeviceremap` block rewrites physical keys coming from one
+<<definputdevices,`definputdevices`>> device before any layer, alias, or
+`defsrc` mapping sees them. It lets a keyboard with a different physical
+layout behave like the others, so layers are written once.
+
+.Syntax:
+[source]
+----
+(defdeviceremap $device-id
+  $from-key $to-key
+  ...
+)
+----
+
+[cols="1,4"]
+|===
+| `$device-id`
+| A device ID defined in `definputdevices`.
+
+| `$from-key`
+| Physical key name as received from that device.
+
+| `$to-key`
+| Key name the event is processed as, or `none` to drop the key entirely.
+|===
+
+Rules:
+
+- One `defdeviceremap` per device ID.
+- The rewrite happens before `defsrc`, so `$to-key` should appear in `defsrc` if you
+  want it remapped by layers; `$from-key` need not be in `defsrc`.
+- Both presses and releases are rewritten, so keys never get stuck.
+- Events from devices without a remap, or keys not listed, are untouched.
+- Takes effect on live reload.
+
+.Example: angle mod for an ISO laptop keyboard
+[source]
+----
+(definputdevices
+  1 ((name "Apple Internal Keyboard / Trackpad"))
+)
+
+;; The key left of z acts as z, z as x, ..., v as b; b is unused.
+(defdeviceremap 1
+  grv z
+  z   x
+  x   c
+  c   v
+  v   b
+  b   none
+)
+----
+
+**Description**
+
+Typical use is matching a laptop's built-in keyboard to a custom layout you
+already flashed on external keyboards (angle mod, swapped bottom-row keys,
+different modifier positions). Compared with wrapping every affected key in a
+`switch` with `(device-history $id 1)`, the remap is declared once and every
+layer stays device-agnostic.
 
 [[optional-defcfg-options]]
 == defcfg options

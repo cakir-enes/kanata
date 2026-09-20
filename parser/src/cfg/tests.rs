@@ -2598,3 +2598,52 @@ fn defchordsv2_include_of_missing_file_is_an_error() {
         err.msg
     );
 }
+
+#[test]
+fn defdeviceremap_parses_pairs_and_none() {
+    let _lk = lock(&CFG_PARSE_LOCK);
+    let cfg = new_from_str(
+        r#"(defcfg)
+            (defsrc a)
+            (deflayer base a)
+            (definputdevices 1 ((name "Apple Internal Keyboard / Trackpad")))
+            (defdeviceremap 1 grv z  z x  b none)"#,
+        HashMap::default(),
+    )
+    .expect("defdeviceremap should parse");
+    let remap = cfg
+        .device_remaps
+        .get(&std::num::NonZeroU8::new(1).unwrap())
+        .expect("remap for device 1");
+    assert_eq!(remap.get(&OsCode::KEY_GRAVE), Some(&Some(OsCode::KEY_Z)));
+    assert_eq!(remap.get(&OsCode::KEY_Z), Some(&Some(OsCode::KEY_X)));
+    assert_eq!(remap.get(&OsCode::KEY_B), Some(&None));
+    assert_eq!(remap.len(), 3);
+}
+
+#[test]
+fn defdeviceremap_rejects_unknown_device_and_odd_pairs() {
+    let _lk = lock(&CFG_PARSE_LOCK);
+    let err = new_from_str(
+        r#"(defcfg)
+            (defsrc a)
+            (deflayer base a)
+            (definputdevices 1 ((name "x")))
+            (defdeviceremap 2 grv z)"#,
+        HashMap::default(),
+    )
+    .err()
+    .expect("unknown device ID must fail");
+    assert!(format!("{err:?}").contains("not defined in definputdevices"));
+    let err = new_from_str(
+        r#"(defcfg)
+            (defsrc a)
+            (deflayer base a)
+            (definputdevices 1 ((name "x")))
+            (defdeviceremap 1 grv z b)"#,
+        HashMap::default(),
+    )
+    .err()
+    .expect("odd pair count must fail");
+    assert!(format!("{err:?}").contains("Missing to-key"));
+}

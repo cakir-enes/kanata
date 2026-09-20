@@ -342,6 +342,9 @@ pub struct Kanata {
     /// `definputdevices` IDs whose key presses are currently dropped.
     /// Toggled at runtime through the TCP server.
     pub disabled_input_devices: HashSet<std::num::NonZeroU8>,
+    /// Per-device physical key remaps from `defdeviceremap`, applied to
+    /// events before any layer processing.
+    pub device_remaps: HashMap<std::num::NonZeroU8, kanata_parser::cfg::DeviceRemap>,
     /// The maximum value of the any time-dependent check in the configuration.
     pub max_key_timing_check: u16,
     #[cfg(feature = "tcp_server")]
@@ -595,6 +598,7 @@ impl Kanata {
             last_pressed_key: KeyCode::No,
             virtual_keys: cfg.fake_keys,
             disabled_input_devices: HashSet::default(),
+            device_remaps: cfg.device_remaps,
             max_key_timing_check: cfg.max_key_timing_check,
             input_devices: cfg.input_devices,
             #[cfg(feature = "tcp_server")]
@@ -764,6 +768,7 @@ impl Kanata {
             last_pressed_key: KeyCode::No,
             virtual_keys: cfg.fake_keys,
             disabled_input_devices: HashSet::default(),
+            device_remaps: cfg.device_remaps,
             max_key_timing_check: cfg.max_key_timing_check,
             input_devices: cfg.input_devices,
             #[cfg(feature = "tcp_server")]
@@ -848,6 +853,7 @@ impl Kanata {
             self.danger_tcp_allow_keylogging = cfg.options.tcp_opts.danger_tcp_allow_keylogging;
         }
         self.max_key_timing_check = cfg.max_key_timing_check;
+        self.device_remaps = cfg.device_remaps;
         // Note: input_devices is intentionally not updated on live reload.
         // The KbdIn device_hash_to_id map is built at startup and not rebuilt.
         // This matches behavior of other device configs (macos-dev-names-include, etc.).
@@ -1028,6 +1034,28 @@ impl Kanata {
     /// Update keyberon layout state for press/release, handle repeat separately
     pub fn handle_input_event(&mut self, event: &KeyEvent) -> Result<()> {
         log::debug!("process recv ev {event:?}");
+        // defdeviceremap: rewrite (or drop) the physical key for this device
+        // before anything else looks at it.
+        let remapped;
+        let event = match event
+            .device_id()
+            .and_then(|id| self.device_remaps.get(&id))
+            .and_then(|remap| remap.get(&event.code))
+        {
+            None => event,
+            Some(None) => {
+                log::debug!("defdeviceremap: dropping {:?}", event.code);
+                return Ok(());
+            }
+            Some(Some(to)) => {
+                remapped = {
+                    let mut ev = *event;
+                    ev.code = *to;
+                    ev
+                };
+                &remapped
+            }
+        };
         if event.value == KeyValue::Press {
             if let Some(id) = event.device_id()
                 && self.disabled_input_devices.contains(&id)

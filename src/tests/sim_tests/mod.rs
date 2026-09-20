@@ -132,6 +132,7 @@ mod capsword_sim_tests;
 mod chord_sim_tests;
 mod delay_tests;
 mod gamepad_sim_tests;
+mod device_remap_sim_tests;
 mod layer_sim_tests;
 mod macro_sim_tests;
 mod mouse_sim_tests;
@@ -171,6 +172,8 @@ fn simulate_with_file_content<S: AsRef<str>>(
         Err(poisoned) => poisoned.into_inner(),
     };
     let mut k = Kanata::new_from_str(cfg.as_ref(), file_content).expect("failed to parse cfg");
+    // Device ID attached to following d:/u:/r: events (`dev:N`, `dev:0` clears).
+    let mut cur_device: Option<std::num::NonZeroU8> = None;
     for pair in sim.as_ref().split_whitespace() {
         match pair.split_once(':') {
             Some((kind, val)) => match kind {
@@ -193,8 +196,9 @@ fn simulate_with_file_content<S: AsRef<str>>(
                 }
                 "d" => {
                     let key_code = str_to_oscode(val).expect("valid keycode");
-                    k.handle_input_event(&KeyEvent::new(key_code, KeyValue::Press))
-                        .expect("input handles fine");
+                    let mut ev = KeyEvent::new(key_code, KeyValue::Press);
+                    ev.set_device_id(cur_device);
+                    k.handle_input_event(&ev).expect("input handles fine");
                     #[cfg(not(all(target_os = "windows", not(feature = "interception_driver"))))]
                     crate::PRESSED_KEYS.lock().insert(key_code);
                     #[cfg(all(target_os = "windows", not(feature = "interception_driver")))]
@@ -204,14 +208,21 @@ fn simulate_with_file_content<S: AsRef<str>>(
                 }
                 "u" => {
                     let key_code = str_to_oscode(val).expect("valid keycode");
-                    k.handle_input_event(&KeyEvent::new(key_code, KeyValue::Release))
-                        .expect("input handles fine");
+                    let mut ev = KeyEvent::new(key_code, KeyValue::Release);
+                    ev.set_device_id(cur_device);
+                    k.handle_input_event(&ev).expect("input handles fine");
                     crate::PRESSED_KEYS.lock().remove(&key_code);
                 }
                 "r" => {
                     let key_code = str_to_oscode(val).expect("valid keycode");
-                    k.handle_input_event(&KeyEvent::new(key_code, KeyValue::Repeat))
-                        .expect("input handles fine");
+                    let mut ev = KeyEvent::new(key_code, KeyValue::Repeat);
+                    ev.set_device_id(cur_device);
+                    k.handle_input_event(&ev).expect("input handles fine");
+                }
+                // Device ID for following key events: dev:N (definputdevices ID), dev:0 = none
+                "dev" | "device" => {
+                    let id = str::parse::<u8>(val).expect("valid device id");
+                    cur_device = std::num::NonZeroU8::new(id);
                 }
                 // Virtual/fake key activation: vk:name[:action] or fakekey:name[:action]
                 // Supported actions: press (p), release, tap (t), toggle (g)
