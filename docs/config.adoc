@@ -4352,8 +4352,9 @@ In this example, pressing `a` on the internal keyboard outputs `x`,
 pressing `a` on the Go60 outputs `y`, and pressing `a` on any other
 device outputs `a`.
 
-NOTE: Device IDs are matched at startup. Devices plugged in after kanata
-starts will not be recognized. Live reload does not re-read device mappings.
+NOTE: On macOS, connected devices are matched at startup and newly connected
+devices are matched lazily when they appear. Live reload does not re-read device
+mappings.
 
 NOTE: Currently supported on macOS only. Linux support is planned.
 

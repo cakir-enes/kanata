@@ -493,6 +493,10 @@ mod tests {
                     action: FakeKeyAction::Tap,
                 },
                 ClientMessage::SetMouse { x, y } => MsgCommand::SetMouse { x, y },
+                ClientMessage::SetInputDeviceEnabled { .. }
+                | ClientMessage::RequestInputDevices {} => {
+                    panic!("input-device control is not exposed by the msg subcommand")
+                }
                 ClientMessage::Reload { .. } => MsgCommand::Reload(opts()),
                 ClientMessage::ReloadNext { .. } => MsgCommand::ReloadNext(opts()),
                 ClientMessage::ReloadPrev { .. } => MsgCommand::ReloadPrev(opts()),
